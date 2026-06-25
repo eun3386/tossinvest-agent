@@ -1,0 +1,74 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["symbol", "market", "decision", "order", "references"],
+  "properties": {
+    "symbol": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string",
+      "enum": ["KR", "US"]
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "confidence", "reason"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["BUY", "SELL", "HOLD"]
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "order": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["quantity", "limitPrice", "currency"],
+          "properties": {
+            "quantity": {
+              "type": "number"
+            },
+            "limitPrice": {
+              "type": "number"
+            },
+            "currency": {
+              "type": "string",
+              "enum": ["KRW", "USD"]
+            }
+          }
+        }
+      ]
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "url", "reason"],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
