@@ -1,7 +1,21 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["symbol", "market", "decision", "order", "references"],
+  "required": [
+    "symbol",
+    "market",
+    "decision",
+    "order",
+    "references",
+    "checklist",
+    "checklistScore",
+    "universeCheck",
+    "positionSizing",
+    "hardStopTriggered",
+    "marketCircuitBreaker",
+    "dataIntegrity",
+    "riskFlags"
+  ],
   "properties": {
     "symbol": {
       "type": "string"
@@ -68,6 +82,117 @@
             "type": "string"
           }
         }
+      }
+    },
+    "checklist": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "priceSeriesFavorable",
+        "newsDisclosureFavorable",
+        "earningsDeteriorated",
+        "negativeNewsDisclosure",
+        "trendBroken",
+        "volumeWeakening",
+        "recentSpikeCooling",
+        "isAveragingDown",
+        "averagingDownAllowed"
+      ],
+      "properties": {
+        "priceSeriesFavorable": { "type": "boolean" },
+        "newsDisclosureFavorable": { "type": "boolean" },
+        "earningsDeteriorated": { "type": "boolean" },
+        "negativeNewsDisclosure": { "type": "boolean" },
+        "trendBroken": { "type": "boolean" },
+        "volumeWeakening": { "type": "boolean" },
+        "recentSpikeCooling": { "type": "boolean" },
+        "isAveragingDown": { "type": "boolean" },
+        "averagingDownAllowed": { "type": "boolean" }
+      }
+    },
+    "checklistScore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["buySeriesCount", "sellConditionCount"],
+      "properties": {
+        "buySeriesCount": { "type": "integer" },
+        "sellConditionCount": { "type": "integer" }
+      }
+    },
+    "universeCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "isNewCandidate",
+        "marketCapKrw",
+        "avgTradeValue20dKrw",
+        "return20dPct",
+        "return5dPct"
+      ],
+      "properties": {
+        "isNewCandidate": { "type": "boolean" },
+        "marketCapKrw": { "type": ["number", "null"] },
+        "avgTradeValue20dKrw": { "type": ["number", "null"] },
+        "return20dPct": { "type": ["number", "null"] },
+        "return5dPct": { "type": ["number", "null"] }
+      }
+    },
+    "positionSizing": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposedAmountKrw", "isAddOnPurchase", "addOnCountToday"],
+          "properties": {
+            "proposedAmountKrw": { "type": "number" },
+            "isAddOnPurchase": { "type": "boolean" },
+            "addOnCountToday": { "type": "integer" }
+          }
+        }
+      ]
+    },
+    "hardStopTriggered": { "type": "boolean" },
+    "marketCircuitBreaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["indexCrash", "viTriggered", "newBuySuspended"],
+      "properties": {
+        "indexCrash": { "type": "boolean" },
+        "viTriggered": { "type": "boolean" },
+        "newBuySuspended": { "type": "boolean" }
+      }
+    },
+    "dataIntegrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apiError", "dataMissingFields", "newsDisclosureConflict"],
+      "properties": {
+        "apiError": { "type": "boolean" },
+        "dataMissingFields": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "newsDisclosureConflict": { "type": "boolean" }
+      }
+    },
+    "riskFlags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "STALE_NEWS",
+          "NEWS_DISCLOSURE_CONFLICT",
+          "PREFILTER_FAILED",
+          "LOW_CONFIDENCE",
+          "CHECKLIST_INSUFFICIENT",
+          "AVERAGING_DOWN_BLOCKED",
+          "CHASE_BUY_BLOCKED",
+          "CIRCUIT_BREAKER_ACTIVE",
+          "DATA_MISSING",
+          "HARD_STOP_OVERRIDE",
+          "POSITION_LIMIT_EXCEEDED"
+        ]
       }
     }
   }

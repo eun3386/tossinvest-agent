@@ -22,7 +22,7 @@ pnpm-debug.log*
 *.log
 
 # local runtime data
-history/
+/history/
 
 # TypeScript
 *.tsbuildinfo

@@ -9,13 +9,14 @@
 - 토스증권 API Key / Secret Key 입력
 - 사용자 행동지침 입력
 - 시작 버튼 이후 일정 간격으로 Codex 분석 실행
-- `~/codex exec --yolo --ephemeral --output-schema` 기반 독립 분석
+- `codex exec --yolo --ephemeral --output-schema` 기반 독립 분석
 - 토스증권 Open API 문서 `tossinvest_apidocs.json`을 Codex 프롬프트에 첨부
 - 분석 결과를 `BUY`, `SELL`, `HOLD` 형태로 표시
 - 권장 수량, 지정가, 통화 표시 및 수정
 - `BUY` / `SELL` 버튼으로 실제 지정가 주문 요청
 - 분석/주문 이력을 `./history/*.json`에 저장
 - History Log 클릭 시 모달에서 보기 좋은 형태로 전체 내용 확인
+- confidence/체크리스트/포지션 한도 등 숫자 기준은 코드가 강제하며, LLM 판단이 기준을 벗어나면 자동으로 HOLD/SELL로 override하고 그 이력을 기록
 
 ## 주의 사항
 
@@ -35,12 +36,12 @@
 - 토스증권 Open API 문서: `./tossinvest_apidocs.json`
 - 토스증권 Open API Key / Secret Key
 
-현재 구현은 Codex 실행 파일 경로를 `~/codex`로 사용합니다. 사용자 환경에서 Codex가 다른 위치에 있다면 [lib/codex-agent.ts](/home/kst/stock/lib/codex-agent.ts)의 `codexBin` 값을 직접 수정해야 합니다.
+현재 구현은 Codex 실행 파일 경로를 기본값으로 `/Applications/Codex.app/Contents/Resources/codex`를 사용하며, `CODEX_BIN` 환경변수로 덮어쓸 수 있습니다. 사용자 환경에서 Codex가 다른 위치에 있다면 `CODEX_BIN`을 설정하거나 [lib/codex-agent.ts](lib/codex-agent.ts)의 `codexBin` 값을 직접 수정하세요.
 
 예:
 
-```ts
-const codexBin = path.join(os.homedir(), "codex");
+```bash
+export CODEX_BIN=/absolute/path/to/codex
 ```
 
 Codex 실행 파일 경로를 지정한 뒤, 해당 실행 파일이 다음 옵션을 지원하는지 확인합니다.
@@ -71,15 +72,15 @@ npm install
 기본값:
 
 ```text
-~/codex
+/Applications/Codex.app/Contents/Resources/codex
 ```
 
-다른 경로를 사용하려면 [lib/codex-agent.ts](/home/kst/stock/lib/codex-agent.ts)의 `codexBin`을 수정하세요.
+다른 경로를 사용하려면 `CODEX_BIN` 환경변수를 설정하거나 [lib/codex-agent.ts](lib/codex-agent.ts)의 `codexBin`을 직접 수정하세요.
 
 예:
 
-```ts
-const codexBin = "/absolute/path/to/codex";
+```bash
+export CODEX_BIN=/absolute/path/to/codex
 ```
 
 경로 수정 후 다음 명령으로 확인합니다.
@@ -135,28 +136,67 @@ schemas/investment-agent-output.schema.json
     "confidence": 0.87,
     "reason": "거래량 증가와 추세 돌파가 확인되었습니다."
   },
-  "order": {
-    "quantity": 2,
-    "limitPrice": 81000,
-    "currency": "KRW"
-  },
+  "order": { "quantity": 2, "limitPrice": 81000, "currency": "KRW" },
   "references": [
-    {
-      "title": "관련 뉴스 제목",
-      "url": "https://example.com",
-      "reason": "판단 근거"
-    }
-  ]
+    { "title": "관련 뉴스 제목", "url": "https://example.com", "reason": "판단 근거" }
+  ],
+  "checklist": {
+    "priceSeriesFavorable": true,
+    "newsDisclosureFavorable": true,
+    "earningsDeteriorated": false,
+    "negativeNewsDisclosure": false,
+    "trendBroken": false,
+    "volumeWeakening": false,
+    "recentSpikeCooling": false,
+    "isAveragingDown": false,
+    "averagingDownAllowed": false
+  },
+  "checklistScore": { "buySeriesCount": 2, "sellConditionCount": 0 },
+  "universeCheck": {
+    "isNewCandidate": false,
+    "marketCapKrw": null,
+    "avgTradeValue20dKrw": null,
+    "return20dPct": null,
+    "return5dPct": null
+  },
+  "positionSizing": { "proposedAmountKrw": 162000, "isAddOnPurchase": false, "addOnCountToday": 0 },
+  "hardStopTriggered": false,
+  "marketCircuitBreaker": { "indexCrash": false, "viTriggered": false, "newBuySuspended": false },
+  "dataIntegrity": { "apiError": false, "dataMissingFields": [], "newsDisclosureConflict": false },
+  "riskFlags": []
 }
 ```
 
-추가 런타임 검증:
+추가 런타임 검증 (`lib/codex-agent.ts`의 `assertRecommendation`):
 
-- `HOLD`이면 `order`는 반드시 `null`
-- `BUY` 또는 `SELL`이면 `order` 필수
+- `HOLD`이면 `order`/`positionSizing`은 반드시 `null`
+- `BUY` 또는 `SELL`이면 `order` 필수, `BUY`면 `positionSizing`도 필수
 - `confidence`는 0 이상 1 이하
 - 주문 수량과 지정가는 0보다 커야 함
 - 참고 링크 URL은 `http://` 또는 `https://`로 시작해야 함
+- `checklist`/`checklistScore`/`universeCheck`/`hardStopTriggered`/`marketCircuitBreaker`/`dataIntegrity`/`riskFlags` 타입 검증
+
+이 구조 검증은 "LLM이 스키마에 맞는 값을 냈는가"만 확인합니다. 그 값이 실제 매매 기준을 충족하는지는 아래 검증 레이어가 별도로 재확인합니다.
+
+## 검증 레이어 (숫자 기준 코드화 + override)
+
+숫자로 판단 가능한 기준(confidence 임계값, BUY 금액/포지션 비중 한도, 신규 발굴 종목 사전 필터, sell 조건 개수 등)은 프롬프트 텍스트가 아니라 코드에 있습니다.
+
+- `lib/trading-rules.ts`
+  - `TRADING_THRESHOLDS`: confidence 0.65, BUY 금액 주문가능금액의 10% 이하, 포지션 비중 15% 이하, SELL 조건 2개 이상, 신규 발굴 종목(KR) 시총/거래대금/급등률 기준. 프리필터 4개 값은 원 지침에 구체적 숫자가 없어 보수적 기본값을 넣어뒀으니 운용 기준에 맞게 조정하세요.
+  - `describeThresholdsForPrompt()`: 위 기준을 사람이 읽는 문장으로 만들어 Codex 프롬프트에 "참고용, 준수 여부는 시스템이 재검증함"으로 삽입합니다. LLM은 숫자를 스스로 pass/fail 판단하지 않고 사실(checklist/checklistScore/universeCheck 등)만 보고합니다.
+  - `passesPreFilter()` / `evaluateChecklistThreshold()` / `validateDecision()`: 순수 함수로 위 기준을 실제로 적용하고, 위반 시 `decision.action`을 강제로 `HOLD`(또는 하드 손절 시 `SELL`)로 override합니다.
+- `lib/market-data.ts`, `lib/tossinvest.ts`
+  - LLM이 자기 보고한 시총/거래대금/급등률/포지션 비중 숫자를 그대로 믿지 않고, 토스증권 API(`/api/v1/stocks`, `/api/v1/candles`, `/api/v1/stocks/{symbol}/warnings`, `/api/v1/buying-power`, `/api/v1/holdings`)로 코드가 직접 재계산합니다.
+  - 이 독립 검증은 KR 시장에만 적용됩니다(시가총액/관리종목 등이 KR 특화 개념이라 US까지 확장하지 않음). US 신규 발굴 BUY는 confidence/체크리스트/서킷브레이커/하드스톱 검증은 그대로 적용되지만 숫자 프리필터는 건너뜁니다.
+  - `codex-agent.ts`는 Codex를 호출하기 **전에** 코드가 실제 보유 종목을 조회해 프롬프트에 주입합니다 (진짜 pre-call 필터).
+- `lib/decision-pipeline.ts`
+  - `finalizeRecommendation()`이 Codex 응답을 받은 뒤 위 독립 데이터를 조회해 `validateDecision()`을 호출하고, override 발생 시 `console.warn`으로 서버 로그에 남깁니다.
+- `app/api/agent/run/route.ts`
+  - history의 `analysis` 레코드에 `recommendation`(최종, override 반영됨)뿐 아니라 `llmRecommendation`(LLM 원본)과 `validation.overrides`(override 사유 목록)를 함께 저장합니다.
+  - override가 발생하면 화면 상단에 경고 배너가 뜨고, History Log 상세 모달의 "코드 검증" 섹션에서 원본 판단과 override 사유를 볼 수 있습니다.
+- `orderButtonsEnabled` (`app/page.tsx`)
+  - 이 검증 레이어가 붙기 전까지는 `false`로 고정되어 있어 실제 주문 버튼이 비활성화됩니다. 운영에 반영할 준비가 되면 명시적으로 변경하세요.
 
 ## History
 
@@ -172,20 +212,23 @@ history/1782410715.json
 
 기록 종류:
 
-- `analysis`: Codex 분석 결과
+- `analysis`: Codex 분석 결과. `recommendation`(코드 검증 후 최종), `llmRecommendation`(LLM 원본), `validation`(override 여부/사유)을 포함합니다.
 - `order`: 사용자가 누른 주문 요청 결과
 
-화면 오른쪽 `History Log`에서 항목을 클릭하면 모달로 상세 내용을 볼 수 있습니다.
+화면 오른쪽 `History Log`에서 항목을 클릭하면 모달로 상세 내용을 볼 수 있습니다. `analysis` 기록에는 "코드 검증" 섹션이 추가되어 override 여부와 사유를 확인할 수 있습니다(이번 검증 레이어 도입 이전 기록에는 `validation` 필드가 없어 해당 섹션이 표시되지 않습니다).
 
 ## 주요 파일 구조
 
 ```text
 app/page.tsx                         # 메인 화면
 app/api/session/route.ts             # API Key/Secret 세션 생성
-app/api/agent/run/route.ts           # Codex 분석 실행
+app/api/agent/run/route.ts           # Codex 분석 실행 + 검증 파이프라인 연결
 app/api/order/route.ts               # Toss 주문 요청
 app/api/history/route.ts             # history 목록 조회
-lib/codex-agent.ts                   # codex exec 실행 래퍼
+lib/codex-agent.ts                   # codex exec 실행 래퍼, 프롬프트 구성
+lib/decision-pipeline.ts             # LLM 응답 독립 재검증 오케스트레이션
+lib/trading-rules.ts                 # 숫자 기준(TRADING_THRESHOLDS) + passesPreFilter/validateDecision
+lib/market-data.ts                   # 시총/거래대금/급등률/포지션비중 독립 계산
 lib/tossinvest.ts                    # 토스증권 API 클라이언트
 lib/history.ts                       # history 파일 저장/조회
 lib/session-store.ts                 # 서버 메모리 세션 저장
@@ -215,6 +258,8 @@ TOSSINVEST_HISTORY_DIR
 TOSSINVEST_BASE_URL
 ```
 
+Codex를 호출하기 전에 서버 코드가 `/api/v1/accounts` → `/api/v1/holdings`를 직접 조회해 실제 보유 종목 목록을 프롬프트에 주입합니다(신규 종목 임의 발굴보다 이 목록을 우선 검토하도록 유도).
+
 Codex 프롬프트에는 다음 지침이 포함됩니다.
 
 - 토스증권 Open API 문서 경로 확인
@@ -222,6 +267,8 @@ Codex 프롬프트에는 다음 지침이 포함됩니다.
 - 실제 주문 생성/정정/취소 endpoint 호출 금지
 - API 데이터와 최신 공개 정보를 함께 참고
 - 근거가 부족하면 `HOLD` 우선
+- `describeThresholdsForPrompt()`로 생성한 정량 기준 목록(참고용 — 최종 적용은 코드가 함)
+- checklist/checklistScore/universeCheck/positionSizing/hardStopTriggered/marketCircuitBreaker/dataIntegrity/riskFlags를 사실대로 보고 (스스로 기준 충족 여부를 판단하지 않음)
 
 ## 주문 방식
 
@@ -250,18 +297,18 @@ npm run build
 npm audit --audit-level=moderate
 ```
 
-Codex schema smoke test 예시:
+Codex schema smoke test 예시 (실제 프로젝트 경로와 확장된 스키마에 맞게 수정하세요. `additionalProperties: false`이므로 checklist 등 필수 필드를 모두 포함해야 통과합니다):
 
 ```bash
-~/codex exec \
+"$CODEX_BIN" exec \
   --skip-git-repo-check \
   --ephemeral \
   --yolo \
   --color never \
-  --output-schema /home/kst/stock/schemas/investment-agent-output.schema.json \
+  --output-schema "$(pwd)/schemas/investment-agent-output.schema.json" \
   --output-last-message /tmp/tossinvest-agent-smoke.json \
-  -C /home/kst/stock \
-  'Return only this JSON object and do not run tools: {"symbol":"005930","market":"KR","decision":{"action":"HOLD","confidence":0.1,"reason":"smoke test"},"order":null,"references":[]}'
+  -C "$(pwd)" \
+  'Return only this JSON object and do not run tools: {"symbol":"005930","market":"KR","decision":{"action":"HOLD","confidence":0.1,"reason":"smoke test"},"order":null,"references":[],"checklist":{"priceSeriesFavorable":false,"newsDisclosureFavorable":false,"earningsDeteriorated":false,"negativeNewsDisclosure":false,"trendBroken":false,"volumeWeakening":false,"recentSpikeCooling":false,"isAveragingDown":false,"averagingDownAllowed":false},"checklistScore":{"buySeriesCount":0,"sellConditionCount":0},"universeCheck":{"isNewCandidate":false,"marketCapKrw":null,"avgTradeValue20dKrw":null,"return20dPct":null,"return5dPct":null},"positionSizing":null,"hardStopTriggered":false,"marketCircuitBreaker":{"indexCrash":false,"viTriggered":false,"newBuySuspended":false},"dataIntegrity":{"apiError":false,"dataMissingFields":[],"newsDisclosureConflict":false},"riskFlags":[]}'
 ```
 
 ## 서버 중지

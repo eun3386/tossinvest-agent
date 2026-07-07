@@ -30,6 +30,7 @@ import type {
   Currency,
   HistoryRecord,
   TradeAction,
+  ValidationOverride,
 } from "@/lib/types";
 import { formatPercent } from "@/lib/utils";
 
@@ -47,11 +48,19 @@ type HistoryEntry = {
   record: HistoryRecord;
 };
 
-const defaultInstructions = `- 보유 종목과 관심 종목을 모두 확인하되, 명확한 근거가 부족하면 HOLD한다.
-- 단기 급등 후 거래량이 식으면 추격 매수를 피한다.
-- 손실 중인 종목은 뉴스와 실적 이벤트가 악화되면 SELL을 검토한다.
-- 매수는 호가/체결/차트가 함께 우호적일 때만 제안한다.
-- 한 번의 주문 권장 규모는 계좌 전체 위험을 키우지 않도록 작게 제안한다.`;
+const defaultInstructions = `- 투자 대상은 보유 종목과 사용자가 명시한 관심 종목을 우선한다. 신규 종목을 임의로 발굴할 경우 시가총액, 거래대금, 최근 급등 여부, 관리/투자경고 지정 여부를 확인해서 checklist/universeCheck에 사실대로 보고한다. 기준 충족 여부는 시스템이 코드로 재검증한다.
+- 판단 전 내부 체크리스트를 먼저 채운다. BUY는 시세 계열(현재가/호가/체결/차트/거래량)과 정보 계열(뉴스/공시/리포트) 양쪽에서 우호적 근거가 동시에 확인될 때만 검토한다.
+- SELL은 손실률만으로 판단하지 않는다. 실적 악화, 악재성 뉴스/공시, 추세 훼손, 거래량 약화 등 여러 근거가 함께 확인될 때만 검토한다.
+- 근거가 약하거나 체크리스트가 불충분하면 BUY/SELL 대신 HOLD한다. 구체적인 confidence·체크리스트 수치 기준은 시스템이 자동으로 강제한다.
+- 데이터 오류, 필수 데이터 누락, 뉴스와 공시의 충돌이 있으면 공시를 우선하고 보수적으로 HOLD한다.
+- 단기 급등 후 거래량이 식으면 추격 매수를 금지한다.
+- 손실 중인 종목의 추가 매수는 명확한 반등 근거가 있고 당일 추가매수 횟수와 기존 비중이 과도하지 않을 때만 허용한다.
+- BUY 제안 금액과 매수 후 종목 누적 비중의 구체적인 한도는 시스템이 자동으로 강제하므로, 여기서는 보수적으로 제안한다.
+- 시장 급락, VI 발동, 명확한 시스템 리스크가 있으면 신규 매수를 중단하고 HOLD를 우선한다.
+- references에는 실제 조회에 성공했고 판단에 사용한 뉴스, 공시, 리포트, 시장 데이터만 포함한다. 오래된 뉴스나 확인 실패 링크는 제외한다.`;
+
+// Temporary safety switch while live order submission is paused.
+const orderButtonsEnabled = false;
 
 function actionVariant(action: TradeAction) {
   if (action === "BUY") return "buy";
@@ -130,6 +139,10 @@ export default function Home() {
   const [currency, setCurrency] = useState<Currency>("KRW");
   const [countdown, setCountdown] = useState(0);
   const [lastOrderResult, setLastOrderResult] = useState<string | null>(null);
+  const [overrideInfo, setOverrideInfo] = useState<{
+    overridden: boolean;
+    overrides: ValidationOverride[];
+  } | null>(null);
   const [selectedHistory, setSelectedHistory] = useState<HistoryEntry | null>(
     null,
   );
@@ -143,6 +156,7 @@ export default function Home() {
 
   const canSubmitOrder = useMemo(() => {
     return (
+      orderButtonsEnabled &&
       Boolean(session && recommendation) &&
       Number(quantity) > 0 &&
       Number(limitPrice) > 0 &&
@@ -236,6 +250,7 @@ export default function Home() {
       setAnalyzing(true);
       setError(null);
       setLastOrderResult(null);
+      setOverrideInfo(null);
       setStatus("Codex exec 분석 중");
 
       try {
@@ -246,6 +261,8 @@ export default function Home() {
         });
         const body = (await response.json()) as {
           recommendation?: AgentRecommendation;
+          overridden?: boolean;
+          overrides?: ValidationOverride[];
           session?: SessionView;
           historyFile?: string;
           error?: string;
@@ -258,6 +275,10 @@ export default function Home() {
         const nextSession = body.session || currentSession;
         setSession(nextSession);
         setRecommendation(body.recommendation);
+        setOverrideInfo({
+          overridden: Boolean(body.overridden),
+          overrides: body.overrides || [],
+        });
         if (body.recommendation.order) {
           setQuantity(String(body.recommendation.order.quantity));
           setLimitPrice(String(body.recommendation.order.limitPrice));
@@ -336,7 +357,7 @@ export default function Home() {
   };
 
   const submitOrder = async (side: "BUY" | "SELL") => {
-    if (!session || !recommendation) return;
+    if (!orderButtonsEnabled || !session || !recommendation) return;
     setOrdering(side);
     setError(null);
     setLastOrderResult(null);
@@ -510,6 +531,20 @@ export default function Home() {
               {error ? (
                 <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
                   {error}
+                </div>
+              ) : null}
+              {overrideInfo?.overridden ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <div className="font-medium">
+                    ⚠ 코드 검증이 LLM 판단을 override했습니다 ({overrideInfo.overrides.length}건)
+                  </div>
+                  <ul className="mt-1 list-inside list-disc space-y-0.5">
+                    {overrideInfo.overrides.map((o, i) => (
+                      <li key={`${o.code}-${i}`}>
+                        [{o.code}] {o.message}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               ) : null}
               {lastOrderResult ? (
@@ -846,6 +881,31 @@ export default function Home() {
                       {selectedHistory.record.recommendation.decision.reason}
                     </p>
                   </section>
+
+                  {selectedHistory.record.validation ? (
+                    <section className="rounded-md border bg-background p-4">
+                      <h3 className="text-sm font-semibold">코드 검증</h3>
+                      {selectedHistory.record.validation.overridden ? (
+                        <div className="mt-2 space-y-2">
+                          <div className="text-sm text-amber-800">
+                            LLM 원본 판단 {selectedHistory.record.llmRecommendation.decision.action}{" "}
+                            → 최종 {selectedHistory.record.recommendation.decision.action} (override됨)
+                          </div>
+                          <ul className="list-inside list-disc space-y-0.5 text-sm text-muted-foreground">
+                            {selectedHistory.record.validation.overrides.map((o, i) => (
+                              <li key={`${o.code}-${i}`}>
+                                [{o.code}] {o.message}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-sm text-muted-foreground">
+                          override 없음 — LLM 판단 그대로 적용
+                        </div>
+                      )}
+                    </section>
+                  ) : null}
 
                   <section className="rounded-md border bg-background p-4">
                     <h3 className="text-sm font-semibold">주문 제안</h3>

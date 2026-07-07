@@ -2,9 +2,13 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fetchHeldSymbols } from "@/lib/market-data";
+import { describeThresholdsForPrompt } from "@/lib/trading-rules";
+import { getAccounts, issueAccessToken } from "@/lib/tossinvest";
 import type { AgentRecommendation, SessionState } from "@/lib/types";
 
-const codexBin = path.join(os.homedir(), "codex");
+const codexBin =
+  process.env.CODEX_BIN || "/Applications/Codex.app/Contents/Resources/codex";
 const apiDocsPath = path.join(process.cwd(), "tossinvest_apidocs.json");
 const outputSchemaPath = path.join(
   process.cwd(),
@@ -113,10 +117,95 @@ function assertRecommendation(value: unknown): AgentRecommendation {
     }
   }
 
+  const checklist = candidate.checklist;
+  if (!checklist || typeof checklist !== "object") {
+    throw new Error("Codex output is missing checklist");
+  }
+  for (const key of [
+    "priceSeriesFavorable",
+    "newsDisclosureFavorable",
+    "earningsDeteriorated",
+    "negativeNewsDisclosure",
+    "trendBroken",
+    "volumeWeakening",
+    "recentSpikeCooling",
+    "isAveragingDown",
+    "averagingDownAllowed",
+  ] as const) {
+    if (typeof checklist[key] !== "boolean") {
+      throw new Error(`Codex output has invalid checklist.${key}`);
+    }
+  }
+
+  const checklistScore = candidate.checklistScore;
+  if (
+    !checklistScore ||
+    typeof checklistScore.buySeriesCount !== "number" ||
+    typeof checklistScore.sellConditionCount !== "number"
+  ) {
+    throw new Error("Codex output has invalid checklistScore");
+  }
+
+  const universeCheck = candidate.universeCheck;
+  if (!universeCheck || typeof universeCheck.isNewCandidate !== "boolean") {
+    throw new Error("Codex output has invalid universeCheck");
+  }
+
+  if (candidate.decision.action === "BUY" && candidate.positionSizing === null) {
+    throw new Error("Codex output must include positionSizing for BUY");
+  }
+  if (candidate.decision.action !== "BUY" && candidate.positionSizing !== null) {
+    throw new Error("Codex output must set positionSizing to null outside of BUY");
+  }
+  if (candidate.positionSizing) {
+    if (
+      typeof candidate.positionSizing.proposedAmountKrw !== "number" ||
+      typeof candidate.positionSizing.isAddOnPurchase !== "boolean" ||
+      typeof candidate.positionSizing.addOnCountToday !== "number"
+    ) {
+      throw new Error("Codex output has invalid positionSizing");
+    }
+  }
+
+  if (typeof candidate.hardStopTriggered !== "boolean") {
+    throw new Error("Codex output has invalid hardStopTriggered");
+  }
+
+  const circuitBreaker = candidate.marketCircuitBreaker;
+  if (
+    !circuitBreaker ||
+    typeof circuitBreaker.indexCrash !== "boolean" ||
+    typeof circuitBreaker.viTriggered !== "boolean" ||
+    typeof circuitBreaker.newBuySuspended !== "boolean"
+  ) {
+    throw new Error("Codex output has invalid marketCircuitBreaker");
+  }
+
+  const dataIntegrity = candidate.dataIntegrity;
+  if (
+    !dataIntegrity ||
+    typeof dataIntegrity.apiError !== "boolean" ||
+    !Array.isArray(dataIntegrity.dataMissingFields) ||
+    typeof dataIntegrity.newsDisclosureConflict !== "boolean"
+  ) {
+    throw new Error("Codex output has invalid dataIntegrity");
+  }
+
+  if (!Array.isArray(candidate.riskFlags)) {
+    throw new Error("Codex output has invalid riskFlags");
+  }
+
   return candidate;
 }
 
-function buildPrompt(session: SessionState) {
+function buildPrompt(
+  session: SessionState,
+  heldSymbols: { symbol: string; quantity: string }[],
+) {
+  const heldSymbolsText = heldSymbols.length
+    ? heldSymbols.map((h) => `- ${h.symbol} (수량 ${h.quantity})`).join("\n")
+    : "(현재 보유 종목 없음)";
+
   return `
 [SYSTEM PROMPT]
 너는 토스증권 Open API와 최신 공개 정보를 함께 확인하는 투자 상태 분석 에이전트다.
@@ -132,6 +221,13 @@ function buildPrompt(session: SessionState) {
 - 외부 자료를 찾지 못했거나 관련성이 낮으면 references는 []로 둔다.
 - 결과는 반드시 JSON Schema와 일치하는 JSON 객체 하나만 출력한다.
 
+코드가 확인한 실제 보유 종목 (사전 조회, 우선 검토 대상):
+${heldSymbolsText}
+위 목록은 시스템이 API로 직접 조회한 것이라 신뢰할 수 있다. 보유 종목과 사용자가 명시한 관심 종목을 우선 검토하고, 목록에 없는 종목을 신규로 제안할 때는 universeCheck.isNewCandidate를 true로 표시한다.
+
+참고용 정량 기준 (아래 숫자를 스스로 pass/fail 판단하지 말고, checklist/checklistScore/universeCheck/positionSizing/riskFlags에 사실 그대로의 수치·boolean만 정직하게 보고한다. 기준 충족 여부와 최종 override는 시스템 코드가 별도로 재검증한다):
+${describeThresholdsForPrompt()}
+
 토스증권 Open API 사용 정보:
 - OpenAPI 문서 경로: ${apiDocsPath}
 - API base URL: https://openapi.tossinvest.com
@@ -143,7 +239,7 @@ function buildPrompt(session: SessionState) {
 history 폴더 정보:
 - 경로: ${historyPath}
 - 파일명은 기본적으로 조사/거래 시각의 epoch seconds를 사용한 JSON 파일이다. 같은 초에 여러 기록이 생기면 "-2" 같은 suffix가 붙을 수 있다.
-- analysis 기록 형식: { "kind": "analysis", "epochSeconds": number, "createdAt": ISO string, "sessionId": string, "recommendation": AgentRecommendation, "rawAssistantMessage": string, "diagnostics": {...} }
+- analysis 기록 형식: { "kind": "analysis", "epochSeconds": number, "createdAt": ISO string, "sessionId": string, "recommendation": AgentRecommendation(코드 검증 후 최종), "llmRecommendation": AgentRecommendation(LLM 원본), "validation": {...}, "rawAssistantMessage": string, "diagnostics": {...} }
 - order 기록 형식: { "kind": "order", "epochSeconds": number, "createdAt": ISO string, "sessionId": string, "request": {...}, "response": {...} }
 - 최근 history를 읽고 기존 판단, 체결 시도, 반복되는 리스크를 참고하되, 오래된 판단보다 최신 API/뉴스 데이터를 우선한다.
 
@@ -153,11 +249,19 @@ ${session.instructions.trim() || "(사용자 행동지침이 비어 있다. 보�
 출력 규칙:
 - symbol: 국내 주식은 종목코드, 미국 주식은 티커.
 - market: KR 또는 US.
-- decision.action: BUY, SELL, HOLD 중 하나.
+- decision.action: BUY, SELL, HOLD 중 하나. 아래 정량 기준의 최종 적용은 시스템이 하므로, 여기서는 정성적 판단(체크리스트가 시사하는 방향)만 반영한다.
 - decision.confidence: 0.0 이상 1.0 이하.
 - decision.reason: 핵심 근거를 한국어로 간결하게 설명.
 - order: BUY 또는 SELL이면 권장 지정가 주문 정보를 넣고, HOLD면 null.
 - references: 근거 자료가 있으면 title/url/reason을 넣고, 없으면 [].
+- checklist: 시세/뉴스/실적/추세/거래량 등 각 항목이 실제로 확인됐는지 boolean으로 정직하게 보고 (판단이 아니라 사실 확인).
+- checklistScore: buySeriesCount(시세+정보 계열 중 충족한 계열 수, 0~2), sellConditionCount(실적/뉴스/추세/거래량 중 충족 개수, 0~4).
+- universeCheck: isNewCandidate가 true면 marketCapKrw/avgTradeValue20dKrw/return20dPct/return5dPct를 실제 조회한 수치로 채운다 (조회 실패 시 dataIntegrity에 반영). 보유/관심 종목이면 모두 null로 두고 isNewCandidate는 false.
+- positionSizing: BUY면 proposedAmountKrw(주문 수량*지정가)/isAddOnPurchase/addOnCountToday를 채우고, 아니면 null.
+- hardStopTriggered: 사용자 행동지침의 하드 손절선에 도달했으면 true.
+- marketCircuitBreaker: 지수 급락/VI 발동/신규매수 정지 상황이면 각각 true.
+- dataIntegrity: API 오류, 누락 필드, 뉴스-공시 상충 여부를 사실대로 보고.
+- riskFlags: 위 항목들에서 스스로 인지한 리스크를 enum 값으로 나열 (최종 목록은 시스템이 override 사유를 추가해 재구성할 수 있음).
 `.trim();
 }
 
@@ -166,7 +270,20 @@ export async function runCodexInvestmentAgent(
 ): Promise<CodexRunResult> {
   const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "tossinvest-agent-"));
   const outputFile = path.join(outputDir, "last-message.json");
-  const prompt = buildPrompt(session);
+
+  let heldSymbols: { symbol: string; quantity: string }[] = [];
+  try {
+    const token = await issueAccessToken(session.apiKey, session.secretKey);
+    const [account] = await getAccounts(token);
+    if (account) {
+      heldSymbols = await fetchHeldSymbols(token, account.accountSeq);
+    }
+  } catch {
+    // 보유 종목 사전 조회 실패는 치명적이지 않다 — LLM이 API를 직접 조회해 보완한다.
+    heldSymbols = [];
+  }
+
+  const prompt = buildPrompt(session, heldSymbols);
 
   const args = [
     "exec",

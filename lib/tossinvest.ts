@@ -77,6 +77,104 @@ export async function getAccounts(token: string) {
   return response.result;
 }
 
+export type StockInfo = {
+  symbol: string;
+  name: string;
+  market: string;
+  status: "SCHEDULED" | "ACTIVE" | "DELISTED";
+  currency: Currency;
+  sharesOutstanding: string;
+};
+
+export async function getStockInfo(symbols: string[], token: string) {
+  const response = await tossFetch<ApiResult<StockInfo[]>>(
+    `/api/v1/stocks?symbols=${encodeURIComponent(symbols.join(","))}`,
+    { token },
+  );
+  return response.result;
+}
+
+export type Candle = {
+  timestamp: string;
+  openPrice: string;
+  highPrice: string;
+  lowPrice: string;
+  closePrice: string;
+  volume: string;
+  currency: Currency;
+};
+
+export async function getCandles(
+  symbol: string,
+  interval: "1m" | "1d",
+  count: number,
+  token: string,
+) {
+  const response = await tossFetch<ApiResult<{ candles: Candle[] }>>(
+    `/api/v1/candles?symbol=${encodeURIComponent(symbol)}&interval=${interval}&count=${count}`,
+    { token },
+  );
+  return response.result.candles;
+}
+
+export type StockWarning = {
+  warningType:
+    | "LIQUIDATION_TRADING"
+    | "OVERHEATED"
+    | "INVESTMENT_WARNING"
+    | "INVESTMENT_RISK"
+    | "VI_STATIC_AND_DYNAMIC"
+    | "VI_STATIC"
+    | "VI_DYNAMIC"
+    | "STOCK_WARRANTS";
+};
+
+export async function getStockWarnings(symbol: string, token: string) {
+  const response = await tossFetch<ApiResult<StockWarning[]>>(
+    `/api/v1/stocks/${encodeURIComponent(symbol)}/warnings`,
+    { token },
+  );
+  return response.result;
+}
+
+export async function getBuyingPower(
+  token: string,
+  accountSeq: number,
+  currency: Currency,
+) {
+  const response = await tossFetch<ApiResult<{ currency: Currency; cashBuyingPower: string }>>(
+    `/api/v1/buying-power?currency=${currency}`,
+    { token, accountSeq },
+  );
+  return response.result;
+}
+
+export type HoldingsItem = {
+  symbol: string;
+  currency: Currency;
+  quantity: string;
+  lastPrice: string;
+  marketValue: { purchaseAmount: string; amount: string; amountAfterCost: string };
+};
+
+export type HoldingsOverview = {
+  marketValue: { amount: { krw: string; usd: string | null } };
+  items: HoldingsItem[];
+};
+
+export async function getHoldings(
+  token: string,
+  accountSeq: number,
+  symbol?: string,
+) {
+  const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+  const response = await tossFetch<ApiResult<HoldingsOverview>>(
+    `/api/v1/holdings${query}`,
+    { token, accountSeq },
+  );
+  return response.result;
+}
+
 export async function createLimitOrder(input: {
   apiKey: string;
   secretKey: string;

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { runCodexInvestmentAgent } from "@/lib/codex-agent";
+import { finalizeRecommendation } from "@/lib/decision-pipeline";
 import { writeHistory } from "@/lib/history";
 import { getSession, updateLatestRecommendation } from "@/lib/session-store";
 import type { AnalysisHistoryRecord } from "@/lib/types";
@@ -18,25 +19,33 @@ export async function POST(request: Request) {
 
   try {
     const result = await runCodexInvestmentAgent(session);
+    const finalized = await finalizeRecommendation(result.recommendation, session);
     const epochSeconds = Math.floor(Date.now() / 1000);
     const record: AnalysisHistoryRecord = {
       kind: "analysis",
       epochSeconds,
       createdAt: new Date(epochSeconds * 1000).toISOString(),
       sessionId: session.id,
-      recommendation: result.recommendation,
+      recommendation: finalized.recommendation,
+      llmRecommendation: finalized.llmRecommendation,
+      validation: {
+        overridden: finalized.overridden,
+        overrides: finalized.overrides,
+      },
       rawAssistantMessage: result.rawAssistantMessage,
       diagnostics: result.diagnostics,
     };
     const historyFile = await writeHistory(record);
     const redactedSession = updateLatestRecommendation(
       session.id,
-      result.recommendation,
+      finalized.recommendation,
       historyFile,
     );
 
     return NextResponse.json({
-      recommendation: result.recommendation,
+      recommendation: finalized.recommendation,
+      overridden: finalized.overridden,
+      overrides: finalized.overrides,
       historyFile,
       session: redactedSession,
     });

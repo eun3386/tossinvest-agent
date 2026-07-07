@@ -14,6 +14,73 @@ export type AgentOrder = {
   currency: Currency;
 };
 
+export type ChecklistFlags = {
+  priceSeriesFavorable: boolean;
+  newsDisclosureFavorable: boolean;
+  earningsDeteriorated: boolean;
+  negativeNewsDisclosure: boolean;
+  trendBroken: boolean;
+  volumeWeakening: boolean;
+  recentSpikeCooling: boolean;
+  isAveragingDown: boolean;
+  averagingDownAllowed: boolean;
+};
+
+export type ChecklistScore = {
+  buySeriesCount: number;
+  sellConditionCount: number;
+};
+
+export type UniverseCheck = {
+  isNewCandidate: boolean;
+  marketCapKrw: number | null;
+  avgTradeValue20dKrw: number | null;
+  return20dPct: number | null;
+  return5dPct: number | null;
+};
+
+export type PositionSizingClaim = {
+  proposedAmountKrw: number;
+  isAddOnPurchase: boolean;
+  addOnCountToday: number;
+};
+
+export type MarketCircuitBreaker = {
+  indexCrash: boolean;
+  viTriggered: boolean;
+  newBuySuspended: boolean;
+};
+
+export type DataIntegrity = {
+  apiError: boolean;
+  dataMissingFields: string[];
+  newsDisclosureConflict: boolean;
+};
+
+export type RiskFlag =
+  | "STALE_NEWS"
+  | "NEWS_DISCLOSURE_CONFLICT"
+  | "PREFILTER_FAILED"
+  | "LOW_CONFIDENCE"
+  | "CHECKLIST_INSUFFICIENT"
+  | "AVERAGING_DOWN_BLOCKED"
+  | "CHASE_BUY_BLOCKED"
+  | "CIRCUIT_BREAKER_ACTIVE"
+  | "DATA_MISSING"
+  | "HARD_STOP_OVERRIDE"
+  | "POSITION_LIMIT_EXCEEDED";
+
+export type ValidationOverride = {
+  code: RiskFlag;
+  message: string;
+};
+
+export type ValidationResult = {
+  decision: AgentRecommendation;
+  overridden: boolean;
+  overrides: ValidationOverride[];
+};
+
 export type AgentRecommendation = {
   symbol: string;
   market: Market;
@@ -24,6 +91,14 @@ export type AgentRecommendation = {
   };
   order: AgentOrder | null;
   references: AgentReference[];
+  checklist: ChecklistFlags;
+  checklistScore: ChecklistScore;
+  universeCheck: UniverseCheck;
+  positionSizing: PositionSizingClaim | null;
+  hardStopTriggered: boolean;
+  marketCircuitBreaker: MarketCircuitBreaker;
+  dataIntegrity: DataIntegrity;
+  riskFlags: RiskFlag[];
 };
 
 export type SessionState = {
@@ -43,6 +118,11 @@ export type AnalysisHistoryRecord = {
   createdAt: string;
   sessionId: string;
   recommendation: AgentRecommendation;
+  llmRecommendation: AgentRecommendation;
+  validation: {
+    overridden: boolean;
+    overrides: ValidationOverride[];
+  };
   rawAssistantMessage: string;
   diagnostics: {
     exitCode: number | null;
