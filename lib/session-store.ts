@@ -9,6 +9,7 @@ export function createSession(input: {
   apiKey: string;
   secretKey: string;
   instructions: string;
+  watchlist: string[];
   intervalSeconds: number;
 }) {
   const session: SessionState = {
@@ -17,6 +18,7 @@ export function createSession(input: {
     apiKey: input.apiKey,
     secretKey: input.secretKey,
     instructions: input.instructions,
+    watchlist: input.watchlist,
     intervalSeconds: input.intervalSeconds,
     latestRecommendation: null,
     latestHistoryFile: null,
@@ -30,6 +32,15 @@ export function getSession(sessionId?: string) {
   if (!session) return null;
   if (sessionId && session.id !== sessionId) return null;
   return session;
+}
+
+export function addToWatchlist(sessionId: string, symbol: string) {
+  const session = getSession(sessionId);
+  if (!session) return null;
+  if (!session.watchlist.includes(symbol)) {
+    session.watchlist = [...session.watchlist, symbol];
+  }
+  return redactSession(session);
 }
 
 export function updateLatestRecommendation(
@@ -49,6 +60,7 @@ export function redactSession(session: SessionState) {
     id: session.id,
     createdAt: session.createdAt,
     instructions: session.instructions,
+    watchlist: session.watchlist,
     intervalSeconds: session.intervalSeconds,
     latestRecommendation: session.latestRecommendation,
     latestHistoryFile: session.latestHistoryFile,

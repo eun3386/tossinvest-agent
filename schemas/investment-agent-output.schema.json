@@ -70,7 +70,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "url", "reason"],
+        "required": ["title", "url", "reason", "publishedAt"],
         "properties": {
           "title": {
             "type": "string"
@@ -80,6 +80,10 @@
           },
           "reason": {
             "type": "string"
+          },
+          "publishedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       }
@@ -191,7 +195,9 @@
           "CIRCUIT_BREAKER_ACTIVE",
           "DATA_MISSING",
           "HARD_STOP_OVERRIDE",
-          "POSITION_LIMIT_EXCEEDED"
+          "POSITION_LIMIT_EXCEEDED",
+          "DAILY_BUY_LIMIT_EXCEEDED",
+          "NEW_CANDIDATE_PENDING_APPROVAL"
         ]
       }
     }

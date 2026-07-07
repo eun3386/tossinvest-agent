@@ -84,6 +84,8 @@ export type StockInfo = {
   status: "SCHEDULED" | "ACTIVE" | "DELISTED";
   currency: Currency;
   sharesOutstanding: string;
+  isCommonShare: boolean;
+  listDate: string | null;
 };
 
 export async function getStockInfo(symbols: string[], token: string) {

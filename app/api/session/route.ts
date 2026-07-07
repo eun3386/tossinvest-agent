@@ -16,6 +16,7 @@ export async function POST(request: Request) {
     apiKey?: string;
     secretKey?: string;
     instructions?: string;
+    watchlist?: string[];
     intervalSeconds?: number;
   };
 
@@ -34,10 +35,15 @@ export async function POST(request: Request) {
     Math.min(3600, Number(body.intervalSeconds || 60)),
   );
 
+  const watchlist = Array.isArray(body.watchlist)
+    ? body.watchlist.map((symbol) => symbol.trim()).filter(Boolean)
+    : [];
+
   const session = createSession({
     apiKey,
     secretKey,
     instructions: body.instructions || "",
+    watchlist,
     intervalSeconds,
   });
 

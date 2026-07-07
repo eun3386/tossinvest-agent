@@ -38,6 +38,7 @@ type SessionView = {
   id: string;
   createdAt: string;
   instructions: string;
+  watchlist: string[];
   intervalSeconds: number;
   latestRecommendation: AgentRecommendation | null;
   latestHistoryFile: string | null;
@@ -48,7 +49,7 @@ type HistoryEntry = {
   record: HistoryRecord;
 };
 
-const defaultInstructions = `- 투자 대상은 보유 종목과 사용자가 명시한 관심 종목을 우선한다. 신규 종목을 임의로 발굴할 경우 시가총액, 거래대금, 최근 급등 여부, 관리/투자경고 지정 여부를 확인해서 checklist/universeCheck에 사실대로 보고한다. 기준 충족 여부는 시스템이 코드로 재검증한다.
+const defaultInstructions = `- 투자 대상은 보유 종목과 (아래 "관심 종목" 입력란에 등록한) 관심 종목을 우선한다. 신규 종목을 임의로 발굴할 경우 시가총액, 거래대금, 최근 급등 여부, 관리/투자경고 지정 여부를 확인해서 checklist/universeCheck에 사실대로 보고한다. 기준 충족 여부는 시스템이 코드로 재검증한다.
 - 판단 전 내부 체크리스트를 먼저 채운다. BUY는 시세 계열(현재가/호가/체결/차트/거래량)과 정보 계열(뉴스/공시/리포트) 양쪽에서 우호적 근거가 동시에 확인될 때만 검토한다.
 - SELL은 손실률만으로 판단하지 않는다. 실적 악화, 악재성 뉴스/공시, 추세 훼손, 거래량 약화 등 여러 근거가 함께 확인될 때만 검토한다.
 - 근거가 약하거나 체크리스트가 불충분하면 BUY/SELL 대신 HOLD한다. 구체적인 confidence·체크리스트 수치 기준은 시스템이 자동으로 강제한다.
@@ -124,6 +125,7 @@ export default function Home() {
   const [apiKey, setApiKey] = useState("");
   const [secretKey, setSecretKey] = useState("");
   const [instructions, setInstructions] = useState(defaultInstructions);
+  const [watchlist, setWatchlist] = useState("");
   const [intervalSeconds, setIntervalSeconds] = useState(60);
   const [session, setSession] = useState<SessionView | null>(null);
   const [recommendation, setRecommendation] =
@@ -314,10 +316,41 @@ export default function Home() {
     runAnalysisRef.current = runAnalysis;
   }, [runAnalysis]);
 
-  const start = async () => {
-    clearTimers();
+  const [promoting, setPromoting] = useState(false);
+
+  const promoteToWatchlist = useCallback(
+    async (symbol: string) => {
+      if (!session) return;
+      setPromoting(true);
+      try {
+        const response = await fetch("/api/session/watchlist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: session.id, symbol }),
+        });
+        const body = (await response.json()) as {
+          session?: SessionView;
+          error?: string;
+        };
+        if (!response.ok || !body.session) {
+          throw new Error(body.error || "관심 종목 등록에 실패했습니다.");
+        }
+        setSession(body.session);
+        setWatchlist(body.session.watchlist.join(", "));
+        await runAnalysis(body.session);
+      } catch (promoteError) {
+        setError(
+          promoteError instanceof Error ? promoteError.message : String(promoteError),
+        );
+      } finally {
+        setPromoting(false);
+      }
+    },
+    [session, runAnalysis],
+  );
+
+  const createSession = async (): Promise<SessionView | null> => {
     setError(null);
-    setLastOrderResult(null);
     setStatus("세션 생성 중");
 
     const response = await fetch("/api/session", {
@@ -327,6 +360,10 @@ export default function Home() {
         apiKey,
         secretKey,
         instructions,
+        watchlist: watchlist
+          .split(",")
+          .map((symbol) => symbol.trim())
+          .filter(Boolean),
         intervalSeconds,
       }),
     });
@@ -338,14 +375,34 @@ export default function Home() {
     if (!response.ok || !body.session) {
       setError(body.error || "세션 생성에 실패했습니다.");
       setStatus("대기 중");
-      return;
+      return null;
     }
 
     setSession(body.session);
+    return body.session;
+  };
+
+  const start = async () => {
+    clearTimers();
+    setLastOrderResult(null);
+    const newSession = await createSession();
+    if (!newSession) return;
+
     setRunning(true);
     runningRef.current = true;
     setStatus("시작됨");
-    await runAnalysis(body.session);
+    await runAnalysis(newSession);
+  };
+
+  // "즉시 분석"은 반복 루프(running)와 무관하게 딱 1회만 실행된다. 세션이 아직
+  // 없으면 새로 만들고, 있으면 재사용한다 — runningRef가 false로 유지되는 한
+  // runAnalysis 내부에서 다음 자동 실행이 예약되지 않는다.
+  const analyzeOnce = async () => {
+    clearTimers();
+    setLastOrderResult(null);
+    const activeSession = session || (await createSession());
+    if (!activeSession) return;
+    await runAnalysis(activeSession);
   };
 
   const stop = () => {
@@ -462,6 +519,15 @@ export default function Home() {
                 />
               </div>
               <div className="space-y-2">
+                <Label htmlFor="watchlist">관심 종목 (쉼표로 구분)</Label>
+                <Input
+                  id="watchlist"
+                  value={watchlist}
+                  onChange={(event) => setWatchlist(event.target.value)}
+                  placeholder="005930, AAPL"
+                />
+              </div>
+              <div className="space-y-2">
                 <Label htmlFor="instructions">행동지침</Label>
                 <Textarea
                   id="instructions"
@@ -514,15 +580,15 @@ export default function Home() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    disabled={!session || analyzing}
-                    onClick={() => runAnalysis()}
+                    disabled={!apiKey || !secretKey || analyzing}
+                    onClick={() => analyzeOnce()}
                   >
                     {analyzing ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <RefreshCcw className="h-4 w-4" />
                     )}
-                    즉시 분석
+                    즉시 분석 (1회)
                   </Button>
                 </div>
               </div>
@@ -545,6 +611,24 @@ export default function Home() {
                       </li>
                     ))}
                   </ul>
+                  {recommendation &&
+                  overrideInfo.overrides.some(
+                    (o) => o.code === "NEW_CANDIDATE_PENDING_APPROVAL",
+                  ) ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="mt-2"
+                      disabled={promoting || analyzing}
+                      onClick={() => promoteToWatchlist(recommendation.symbol)}
+                    >
+                      {promoting ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : null}
+                      {recommendation.symbol} 관심 종목에 추가하고 재분석
+                    </Button>
+                  ) : null}
                 </div>
               ) : null}
               {lastOrderResult ? (

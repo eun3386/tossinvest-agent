@@ -6,6 +6,7 @@ export type AgentReference = {
   title: string;
   url: string;
   reason: string;
+  publishedAt: string; // ISO date-time, 발행/게시 시각
 };
 
 export type AgentOrder = {
@@ -68,7 +69,9 @@ export type RiskFlag =
   | "CIRCUIT_BREAKER_ACTIVE"
   | "DATA_MISSING"
   | "HARD_STOP_OVERRIDE"
-  | "POSITION_LIMIT_EXCEEDED";
+  | "POSITION_LIMIT_EXCEEDED"
+  | "DAILY_BUY_LIMIT_EXCEEDED"
+  | "NEW_CANDIDATE_PENDING_APPROVAL";
 
 export type ValidationOverride = {
   code: RiskFlag;
@@ -107,6 +110,7 @@ export type SessionState = {
   apiKey: string;
   secretKey: string;
   instructions: string;
+  watchlist: string[];
   intervalSeconds: number;
   latestRecommendation: AgentRecommendation | null;
   latestHistoryFile: string | null;

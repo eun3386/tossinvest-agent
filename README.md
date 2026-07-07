@@ -7,6 +7,7 @@
 ## 주요 기능
 
 - 토스증권 API Key / Secret Key 입력
+- 관심 종목 입력 (쉼표로 구분, 세션에 저장되어 호출 전 프롬프트에 주입됨 — 토스증권 API 자체에는 관심종목 조회 기능이 없어 코드가 별도로 관리)
 - 사용자 행동지침 입력
 - 시작 버튼 이후 일정 간격으로 Codex 분석 실행
 - `codex exec --yolo --ephemeral --output-schema` 기반 독립 분석
@@ -105,13 +106,14 @@ http://localhost:3000
 
 1. 브라우저에서 `http://localhost:3000`을 엽니다.
 2. 토스증권 `API Key`와 `Secret Key`를 입력합니다.
-3. 분석 간격을 초 단위로 입력합니다. 최소값은 30초입니다.
-4. 행동지침을 입력합니다.
-5. `시작` 버튼을 누릅니다.
-6. Codex가 토스증권 Open API 문서와 현재 history를 참고하여 분석합니다.
-7. 결과가 화면에 표시됩니다.
-8. 필요하면 수량, 지정가, 통화를 수정합니다.
-9. 실제 주문을 원할 때만 `BUY` 또는 `SELL` 버튼을 누릅니다.
+3. 관심 종목을 쉼표로 구분해 입력합니다(선택 사항).
+4. 분석 간격을 초 단위로 입력합니다. 최소값은 30초입니다.
+5. 행동지침을 입력합니다.
+6. `시작` 버튼을 누릅니다.
+7. Codex가 토스증권 Open API 문서와 현재 history를 참고하여 분석합니다. 이때 보유 종목·관심 종목 목록은 코드가 API 호출 전에 직접 조회/전달합니다.
+8. 결과가 화면에 표시됩니다.
+9. 필요하면 수량, 지정가, 통화를 수정합니다.
+10. 실제 주문을 원할 때만 `BUY` 또는 `SELL` 버튼을 누릅니다.
 
 사용자가 1분 또는 설정한 분석 간격 동안 아무 조작을 하지 않으면 다음 분석 턴으로 넘어갑니다.
 
@@ -138,7 +140,7 @@ schemas/investment-agent-output.schema.json
   },
   "order": { "quantity": 2, "limitPrice": 81000, "currency": "KRW" },
   "references": [
-    { "title": "관련 뉴스 제목", "url": "https://example.com", "reason": "판단 근거" }
+    { "title": "관련 뉴스 제목", "url": "https://example.com", "reason": "판단 근거", "publishedAt": "2026-07-05T09:00:00+09:00" }
   ],
   "checklist": {
     "priceSeriesFavorable": true,
@@ -173,7 +175,7 @@ schemas/investment-agent-output.schema.json
 - `BUY` 또는 `SELL`이면 `order` 필수, `BUY`면 `positionSizing`도 필수
 - `confidence`는 0 이상 1 이하
 - 주문 수량과 지정가는 0보다 커야 함
-- 참고 링크 URL은 `http://` 또는 `https://`로 시작해야 함
+- 참고 링크 URL은 `http://` 또는 `https://`로 시작해야 하고, `publishedAt`은 유효한 날짜여야 함
 - `checklist`/`checklistScore`/`universeCheck`/`hardStopTriggered`/`marketCircuitBreaker`/`dataIntegrity`/`riskFlags` 타입 검증
 
 이 구조 검증은 "LLM이 스키마에 맞는 값을 냈는가"만 확인합니다. 그 값이 실제 매매 기준을 충족하는지는 아래 검증 레이어가 별도로 재확인합니다.
@@ -183,13 +185,19 @@ schemas/investment-agent-output.schema.json
 숫자로 판단 가능한 기준(confidence 임계값, BUY 금액/포지션 비중 한도, 신규 발굴 종목 사전 필터, sell 조건 개수 등)은 프롬프트 텍스트가 아니라 코드에 있습니다.
 
 - `lib/trading-rules.ts`
-  - `TRADING_THRESHOLDS`: confidence 0.65, BUY 금액 주문가능금액의 10% 이하, 포지션 비중 15% 이하, SELL 조건 2개 이상, 신규 발굴 종목(KR) 시총/거래대금/급등률 기준. 프리필터 4개 값은 원 지침에 구체적 숫자가 없어 보수적 기본값을 넣어뒀으니 운용 기준에 맞게 조정하세요.
+  - `TRADING_THRESHOLDS`: confidence 0.65, BUY 금액 주문가능금액의 10% 이하, 포지션 비중 15% 이하, SELL 조건 2개 이상, 신규 발굴 종목(KR) 시총 5,000억 이상/거래대금 30억 이상/20일 급등률 +30%↑ 제외/5일 +20%↑ 제외/상장 6개월 이상/보통주(우선주·스팩 제외), 물타기 손실률 -10%보다 깊으면 무조건 차단(그보다 얕으면 LLM 반등 근거 참고), 하드 손절선 -20% 이하 시 코드가 무조건 SELL, references 발행 3일 이내만 인정, 종목 무관 일일 매수 3회/포트폴리오 20% 이하. 구체적 숫자가 없던 항목은 보수적 기본값을 넣어뒀으니 운용 기준에 맞게 조정하세요.
   - `describeThresholdsForPrompt()`: 위 기준을 사람이 읽는 문장으로 만들어 Codex 프롬프트에 "참고용, 준수 여부는 시스템이 재검증함"으로 삽입합니다. LLM은 숫자를 스스로 pass/fail 판단하지 않고 사실(checklist/checklistScore/universeCheck 등)만 보고합니다.
-  - `passesPreFilter()` / `evaluateChecklistThreshold()` / `validateDecision()`: 순수 함수로 위 기준을 실제로 적용하고, 위반 시 `decision.action`을 강제로 `HOLD`(또는 하드 손절 시 `SELL`)로 override합니다.
-- `lib/market-data.ts`, `lib/tossinvest.ts`
-  - LLM이 자기 보고한 시총/거래대금/급등률/포지션 비중 숫자를 그대로 믿지 않고, 토스증권 API(`/api/v1/stocks`, `/api/v1/candles`, `/api/v1/stocks/{symbol}/warnings`, `/api/v1/buying-power`, `/api/v1/holdings`)로 코드가 직접 재계산합니다.
-  - 이 독립 검증은 KR 시장에만 적용됩니다(시가총액/관리종목 등이 KR 특화 개념이라 US까지 확장하지 않음). US 신규 발굴 BUY는 confidence/체크리스트/서킷브레이커/하드스톱 검증은 그대로 적용되지만 숫자 프리필터는 건너뜁니다.
+  - `passesPreFilter()` / `evaluateChecklistThreshold()` / `validateDecision()`: 순수 함수로 위 기준을 실제로 적용하고, 위반 시 `decision.action`을 강제로 `HOLD`(또는 하드 손절 시 `SELL`)로 override합니다. `evaluateChecklistThreshold()`는 LLM이 자기보고한 `checklistScore`(개수)를 신뢰하지 않고 개별 boolean에서 코드가 직접 재계산합니다.
+- `lib/market-data.ts`, `lib/tossinvest.ts`, `lib/history.ts`
+  - LLM이 자기 보고한 시총/거래대금/급등률/보통주 여부/상장일/포지션 비중/보유 손실률 숫자를 그대로 믿지 않고, 토스증권 API(`/api/v1/stocks`, `/api/v1/candles`, `/api/v1/stocks/{symbol}/warnings`, `/api/v1/buying-power`, `/api/v1/holdings`)로 코드가 직접 재계산합니다. 스팩 여부는 API에 전용 필드가 없어 종목명 휴리스틱(`스팩`/`기업인수목적` 포함 여부)으로 추정합니다.
+  - 하드 손절선도 LLM 자기보고(`hardStopTriggered`)를 신뢰하지 않고, 코드가 보유 손실률을 독립적으로 계산해서만 발동합니다.
+  - 당일 추가매수 횟수/종목 무관 일일 매수 횟수·총액은 Toss Open API가 아직 체결 주문 조회(`status=CLOSED`)를 지원하지 않아, 이 앱 자체의 `history/` 로그를 근거로 코드가 직접 집계합니다.
+  - 이 독립 검증(프리필터/포지션비중/물타기/하드손절/일일한도)은 KR 시장에만 적용됩니다(시가총액/관리종목 등이 KR 특화 개념이라 US까지 확장하지 않음). US는 confidence/체크리스트/서킷브레이커 검증은 그대로 적용되지만 위 숫자 검증은 건너뜁니다.
   - `codex-agent.ts`는 Codex를 호출하기 **전에** 코드가 실제 보유 종목을 조회해 프롬프트에 주입합니다 (진짜 pre-call 필터).
+- `lib/reference-check.ts`
+  - LLM이 인용한 뉴스·공시 링크를 실제로 HTTP GET 요청해서 살아있는지 확인하고, 응답에 실패한 링크는 제외합니다. 또한 각 참고자료의 `publishedAt`(LLM 자기보고 발행 시각)이 3일보다 오래됐으면 판단 근거로 인정하지 않고 제외합니다. 제외된 항목은 `console.warn`으로 로그를 남깁니다.
+- 신규 종목 승인 게이트 (`lib/decision-pipeline.ts`, `lib/trading-rules.ts`)
+  - LLM의 `universeCheck.isNewCandidate` 자기보고를 신뢰하지 않고, 코드가 실제 보유 종목(API)과 세션의 관심 종목 목록을 직접 대조해서 "보유·관심 종목이 아닌 심볼은 BUY를 강제로 HOLD"로 막습니다(`NEW_CANDIDATE_PENDING_APPROVAL`). 화면에서 override 배너에 뜨는 "관심 종목에 추가하고 재분석" 버튼을 누르면 `POST /api/session/watchlist`로 그 종목을 관심 종목에 등록하고 바로 재분석합니다. 등록 전까지는 후보로만 제안되고 실제 매수 판단 대상이 되지 않습니다.
 - `lib/decision-pipeline.ts`
   - `finalizeRecommendation()`이 Codex 응답을 받은 뒤 위 독립 데이터를 조회해 `validateDecision()`을 호출하고, override 발생 시 `console.warn`으로 서버 로그에 남깁니다.
 - `app/api/agent/run/route.ts`

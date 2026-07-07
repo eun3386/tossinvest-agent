@@ -111,7 +111,9 @@ function assertRecommendation(value: unknown): AgentRecommendation {
       typeof reference.url !== "string" ||
       !/^https?:\/\//.test(reference.url) ||
       typeof reference.reason !== "string" ||
-      !reference.reason.trim()
+      !reference.reason.trim() ||
+      typeof reference.publishedAt !== "string" ||
+      Number.isNaN(new Date(reference.publishedAt).getTime())
     ) {
       throw new Error("Codex output has invalid reference");
     }
@@ -206,6 +208,10 @@ function buildPrompt(
     ? heldSymbols.map((h) => `- ${h.symbol} (수량 ${h.quantity})`).join("\n")
     : "(현재 보유 종목 없음)";
 
+  const watchlistText = session.watchlist.length
+    ? session.watchlist.map((symbol) => `- ${symbol}`).join("\n")
+    : "(사용자가 등록한 관심 종목 없음)";
+
   return `
 [SYSTEM PROMPT]
 너는 토스증권 Open API와 최신 공개 정보를 함께 확인하는 투자 상태 분석 에이전트다.
@@ -223,7 +229,12 @@ function buildPrompt(
 
 코드가 확인한 실제 보유 종목 (사전 조회, 우선 검토 대상):
 ${heldSymbolsText}
-위 목록은 시스템이 API로 직접 조회한 것이라 신뢰할 수 있다. 보유 종목과 사용자가 명시한 관심 종목을 우선 검토하고, 목록에 없는 종목을 신규로 제안할 때는 universeCheck.isNewCandidate를 true로 표시한다.
+위 목록은 시스템이 API로 직접 조회한 것이라 신뢰할 수 있다.
+
+사용자가 등록한 관심 종목 (세션에 저장된 값, 우선 검토 대상):
+${watchlistText}
+
+보유 종목과 관심 종목을 우선 검토하고, 위 두 목록에 없는 종목을 신규로 제안할 때는 universeCheck.isNewCandidate를 true로 표시한다. 위 두 목록에 없는 종목은 사용자가 관심 종목으로 승인하기 전까지 시스템이 BUY를 강제로 HOLD로 바꾼다 — 그래도 근거가 충분하면 후보로 제안하고 이유를 설명하되, 실제 매수는 사용자 승인 이후에만 가능하다는 점을 판단 근거에 반영한다.
 
 참고용 정량 기준 (아래 숫자를 스스로 pass/fail 판단하지 말고, checklist/checklistScore/universeCheck/positionSizing/riskFlags에 사실 그대로의 수치·boolean만 정직하게 보고한다. 기준 충족 여부와 최종 override는 시스템 코드가 별도로 재검증한다):
 ${describeThresholdsForPrompt()}
@@ -253,12 +264,12 @@ ${session.instructions.trim() || "(사용자 행동지침이 비어 있다. 보�
 - decision.confidence: 0.0 이상 1.0 이하.
 - decision.reason: 핵심 근거를 한국어로 간결하게 설명.
 - order: BUY 또는 SELL이면 권장 지정가 주문 정보를 넣고, HOLD면 null.
-- references: 근거 자료가 있으면 title/url/reason을 넣고, 없으면 [].
+- references: 근거 자료가 있으면 title/url/reason/publishedAt(ISO 8601 발행·게시 시각, 정확히 모르면 확인한 시각을 최대한 가깝게 추정)을 넣고, 없으면 []. 오래된 자료는 시스템이 별도로 걸러내니 발행 시각은 사실대로 적는다.
 - checklist: 시세/뉴스/실적/추세/거래량 등 각 항목이 실제로 확인됐는지 boolean으로 정직하게 보고 (판단이 아니라 사실 확인).
 - checklistScore: buySeriesCount(시세+정보 계열 중 충족한 계열 수, 0~2), sellConditionCount(실적/뉴스/추세/거래량 중 충족 개수, 0~4).
 - universeCheck: isNewCandidate가 true면 marketCapKrw/avgTradeValue20dKrw/return20dPct/return5dPct를 실제 조회한 수치로 채운다 (조회 실패 시 dataIntegrity에 반영). 보유/관심 종목이면 모두 null로 두고 isNewCandidate는 false.
 - positionSizing: BUY면 proposedAmountKrw(주문 수량*지정가)/isAddOnPurchase/addOnCountToday를 채우고, 아니면 null.
-- hardStopTriggered: 사용자 행동지침의 하드 손절선에 도달했으면 true.
+- hardStopTriggered: 사용자 행동지침의 하드 손절선에 도달했다고 판단하면 true. 참고용 신호일 뿐이며, 실제 발동 여부는 시스템이 보유 손실률을 독립적으로 계산해서 결정한다.
 - marketCircuitBreaker: 지수 급락/VI 발동/신규매수 정지 상황이면 각각 true.
 - dataIntegrity: API 오류, 누락 필드, 뉴스-공시 상충 여부를 사실대로 보고.
 - riskFlags: 위 항목들에서 스스로 인지한 리스크를 enum 값으로 나열 (최종 목록은 시스템이 override 사유를 추가해 재구성할 수 있음).
@@ -277,9 +288,14 @@ export async function runCodexInvestmentAgent(
     const [account] = await getAccounts(token);
     if (account) {
       heldSymbols = await fetchHeldSymbols(token, account.accountSeq);
+      console.log(
+        `[codex-agent] pre-call 보유 종목 조회 성공: ${heldSymbols.length}건`,
+        heldSymbols.map((h) => h.symbol),
+      );
     }
-  } catch {
+  } catch (error) {
     // 보유 종목 사전 조회 실패는 치명적이지 않다 — LLM이 API를 직접 조회해 보완한다.
+    console.warn("[codex-agent] pre-call 보유 종목 조회 실패, 빈 목록으로 진행", error);
     heldSymbols = [];
   }
 

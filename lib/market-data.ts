@@ -13,6 +13,18 @@ const ACTIVE_WARNING_TYPES = new Set([
   "INVESTMENT_RISK",
 ]);
 
+// 토스증권 API에는 스팩(기업인수목적회사) 여부를 알려주는 별도 필드가 없다.
+// 국내 스팩은 관례적으로 종목명에 "스팩" 또는 "기업인수목적"이 들어가므로
+// 이름 기반으로 추정한다 — 완벽하지 않은 휴리스틱이라는 점을 감안할 것.
+function isLikelySpacName(name: string): boolean {
+  return /스팩|기업인수목적/.test(name);
+}
+
+function monthsBetween(fromDate: string, to: Date): number {
+  const from = new Date(fromDate);
+  return (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
+}
+
 export async function fetchUniverseSnapshot(
   symbol: string,
   token: string,
@@ -50,6 +62,9 @@ export async function fetchUniverseSnapshot(
     return20dPct,
     return5dPct,
     hasActiveWarning: warnings.some((w) => ACTIVE_WARNING_TYPES.has(w.warningType)),
+    isCommonShare: stock.isCommonShare,
+    monthsListed: stock.listDate ? monthsBetween(stock.listDate, new Date()) : null,
+    isLikelySpac: isLikelySpacName(stock.name),
   };
 }
 
@@ -76,7 +91,24 @@ export async function fetchPositionSizingSnapshot(
       ? ((existingPositionValueKrw + proposedAmountKrw) / portfolioTotalValueKrw) * 100
       : 100;
 
-  return { pctOfAvailableCash, resultingPositionPctOfPortfolio };
+  return { pctOfAvailableCash, resultingPositionPctOfPortfolio, portfolioTotalValueKrw };
+}
+
+// 물타기 하드룰과 하드 손절선 판정에 공통으로 쓰이는 보유 포지션 손실률(%).
+// 매입금액 대비 현재 평가금액으로 계산 — 보유 중이 아니면 null.
+export async function fetchPositionLossPct(
+  symbol: string,
+  token: string,
+  accountSeq: number,
+): Promise<number | null> {
+  const holdings = await getHoldings(token, accountSeq, symbol);
+  const position = holdings.items.find((item) => item.symbol === symbol);
+  if (!position) return null;
+
+  const purchaseAmount = Number(position.marketValue.purchaseAmount);
+  if (purchaseAmount <= 0) return null;
+
+  return ((Number(position.marketValue.amount) - purchaseAmount) / purchaseAmount) * 100;
 }
 
 export async function fetchHeldSymbols(
